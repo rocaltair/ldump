@@ -5,6 +5,7 @@ local tables = {
 		a = 1,
 		x = "5",
 		list = {1,2,3,4,5},
+		["quote\""] = "here is the quote [[here]]",
 	},
 	t2 = {
 		function () end,

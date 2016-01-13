@@ -4,9 +4,12 @@
 #include <stdint.h>
 #include <assert.h>
 #include <string.h>
-#include "compat.h"
 #include "rbuf.h"
 #define LIBNAME "ldump"
+
+#if ((LUA_VERSION_NUM < 502) && (!defined(luaL_newlib)))
+#  define luaL_newlib(L,l) (lua_newtable(L), luaL_register(L,NULL,l))
+#endif
 
 #define LUA_INTEGER_FMT "%d"
 #define LUAI_MAXNUMBER2STR 32
