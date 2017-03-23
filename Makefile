@@ -1,22 +1,19 @@
 CFLAGS = -O3
-LFLAGS = --shared -fPIC -llua
+LFLAGS = --shared -fPIC -L/usr/local/lib -llua
 
 LIB = ldump.so
 
 all : $(LIB)
 
 
-$(LIB) : ldump.o rbuf.o
+$(LIB) : ldump.o
 	$(CC) -o $@ $(LFLAGS) $^
 
 ldump.o : ldump.c
 	$(CC) -c $(CFLAGS) $<
 
-rbuf.o : rbuf.c rbuf.h
-	$(CC) -c $(CFLAGS) $<
-
 clean : 
-	rm -f ldump.o rbuf.o $(LIB)
+	rm -f ldump.o $(LIB)
 
 .PHONY : clean
 
