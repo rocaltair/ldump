@@ -15,18 +15,18 @@ local tables = {
 	},
 }
 
-table.foreach(tables, function(tname, tbl)
+for tname, tbl in pairs(tables) do
 	local ok = ldump.check(tbl)
 	if not ok then
 		print(string.format("tname=%s check failed", tname))
 	else
 		print(string.format("tname=%s check ok", tname))
-		local s, len = ldump.dump(tables.t1)
+		local s, len = ldump.dump(tbl)
 		print("len of " .. tname, len)
 		print("dump of " .. tname, s)
 		print(tname .. " in line", ldump.dump_in_line(tbl))
 	end
-end)
+end
 
 print("check nil", ldump.check()) -- this will emit an error for non args in ldump.check
 

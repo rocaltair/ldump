@@ -6,14 +6,36 @@
 #include <string.h>
 #include <ctype.h>
 
-#if (LUA_VERSION_NUM < 502 && !defined(luaL_newlib))
+#if (LUA_VERSION_NUM < 502)
+# ifndef luaL_newlib
 #  define luaL_newlib(L,l) (lua_newtable(L), luaL_register(L,NULL,l))
 # endif
+# ifndef lua_rawlen
+#  define lua_rawlen(L, l) lua_objlen(L, l)
+# endif
+# endif
 
-#define LUA_INTEGER_FMT "%d"
-#define LUAI_MAXNUMBER2STR 32
-#define integer2str(s,n) sprintf((s), LUA_INTEGER_FMT, (n))
-#define DEFAULT_TINY_BUFF_SIZE 1024 * 512
+#ifndef LDUMP_MAXNUMBER2STR
+# define LDUMP_MAXNUMBER2STR 32L
+#endif
+
+#ifndef LUA_INTEGER_FMT
+# define LUA_INTEGER_FMT "%ld"
+#endif
+
+#ifndef LDUMP_NUMBER_FMT
+# define LDUMP_NUMBER_FMT "%.7g"
+#endif
+
+#ifdef lua_integer2str
+# undef lua_integer2str
+#endif
+# define lua_integer2str(s, sz, n) sprintf((s), LUA_INTEGER_FMT, (n))
+
+#ifdef lua_number2str
+# undef lua_number2str
+#endif
+# define lua_number2str(s, sz, n) sprintf((s), LDUMP_NUMBER_FMT, (n))
 
 #ifndef RBUF_RATIO_SIZE
 # define RBUF_RATIO_SIZE (1024 * 1024)
@@ -150,7 +172,8 @@ static int rbuf_catrepr(rbuf_t * s, const char *p, size_t len)
 		switch(*p) {
 		case '\\':
 		case '"': 
-			rbuf_catprintf(s,"\\%c",*p);
+			if (rbuf_catprintf(s,"\\%c",*p) < 0)
+				return -1;
 			break;
 		case '\n': rbuf_catlen(s,"\\n",2); break;
 		case '\r': rbuf_catlen(s,"\\r",2); break;
@@ -158,10 +181,13 @@ static int rbuf_catrepr(rbuf_t * s, const char *p, size_t len)
 		case '\a': rbuf_catlen(s,"\\a",2); break;
 		case '\b': rbuf_catlen(s,"\\b",2); break;
 		default:
-			   if (isprint(*p))
-				   rbuf_catprintf(s,"%c",*p);
-			   else 
-				   rbuf_catprintf(s,"\\x%02x",(unsigned char)*p);
+			   if (isprint(*p)) {
+				   if (rbuf_catprintf(s,"%c",*p) < 0)
+					   return -1;
+			   } else {
+				   if (rbuf_catprintf(s,"\\x%02x",(unsigned char)*p) < 0)
+					   return -1;
+			   }
 			   break;
 		}    
 		p++; 
@@ -184,7 +210,7 @@ static void rbuf_test()
 	rbuf_free(&buf);
 }
 
-static const size_t TABLE_MAX_DEEP = 20;
+static const size_t TABLE_MAX_DEEP = 16;
 static const char* INDENT_MAP[21] = {
 	"",
 	"  ",
@@ -212,10 +238,10 @@ static const char* INDENT_MAP[21] = {
 static const size_t INDENT_LEN = 2; /* indent len == 2 */
 static int _check_value(lua_State *L);
 
-
-static void conv_key(lua_State *L, int index, rbuf_t *tb)
+static int conv_key(lua_State *L, int index, rbuf_t *tb)
 {
         int type = lua_type(L, index);
+	int ret = 0;
         switch(type)
         {    
                 case LUA_TSTRING: {    
@@ -227,8 +253,8 @@ static void conv_key(lua_State *L, int index, rbuf_t *tb)
                         break;
                 }    
                 case LUA_TNUMBER: {    
-                        char s[LUAI_MAXNUMBER2STR];
-                        size_t len = lua_number2str(s, luaL_checknumber(L, index));
+                        char s[LDUMP_MAXNUMBER2STR];
+                        size_t len = (size_t)lua_number2str(s, LDUMP_MAXNUMBER2STR, luaL_checknumber(L, index));
                         /* 整数类型才加上[] */
 			rbuf_catlen(tb, "[", 1);
 			rbuf_catlen(tb, s, len);
@@ -236,15 +262,20 @@ static void conv_key(lua_State *L, int index, rbuf_t *tb)
                         break;
                 }    
                 default:
-                        luaL_error(L, "type error:%d", type);
+			/*
+			 * luaL_error(L, "type error:%d", type);
+			 */
+			lua_pushfstring(L, "type error:%d,type=%s,cannot be key.", type, lua_typename(L, type));
+			ret = -1;
                         break;
-        }    
-
+        }
+	return ret;
 }
 
-static void conv_simple_type(lua_State *L, int index, rbuf_t *tb)
+static int conv_simple_type(lua_State *L, int index, rbuf_t *tb)
 {
         int type = lua_type(L, index);
+	int ret = 0;
         switch(type)
         {
                 case LUA_TSTRING: {
@@ -256,8 +287,8 @@ static void conv_simple_type(lua_State *L, int index, rbuf_t *tb)
                 /* 这儿不能够直接使用lua_tostring，因为这个api会修改栈内容，将导致array的lua_next访问异常。 */
                 /* 也不能够强行把lua_Number转换为%d输出。 */
                 case LUA_TNUMBER: {
-                        char s[LUAI_MAXNUMBER2STR];
-                        size_t len = lua_number2str(s, luaL_checknumber(L, index));
+                        char s[LDUMP_MAXNUMBER2STR];
+                        size_t len = (size_t)lua_number2str(s, LDUMP_MAXNUMBER2STR, luaL_checknumber(L, index));
 			rbuf_catlen(tb, s, len);
                         break;
 		}
@@ -270,19 +301,24 @@ static void conv_simple_type(lua_State *L, int index, rbuf_t *tb)
                         break;
 		}
                 default:
-                        luaL_error(L, "type error Type:%d,Name:%s.table can not be key", type, lua_typename(L, type));
+                        /*
+			 * luaL_error(L, "type error Type:%d,Name:%s.table can not be key", type, lua_typename(L, type));
+			 */
+			lua_pushfstring(L, "type error Type:%d,Name:%s can not be dump", type, lua_typename(L, type));
+			ret = -1;
                         break;
         }
+	return ret;
 }
 
-static void hash_conv_line(lua_State *L, int depth, rbuf_t *tb)
+static int hash_conv_line(lua_State *L, int depth, rbuf_t *tb)
 {
 	int type;
         depth++;
-        if (depth > 20)
+        if (depth > TABLE_MAX_DEEP)
         {
-                luaL_error(L, "dump too deep!");
-                return;
+                lua_pushfstring(L, "dump too deep depth=%d,max=%d!", depth, TABLE_MAX_DEEP);
+                return -1;
         }
         type = lua_type(L, -1);
         if (type == LUA_TTABLE)
@@ -292,9 +328,11 @@ static void hash_conv_line(lua_State *L, int depth, rbuf_t *tb)
                 while (lua_next(L, -2) != 0)
                 {
 			rbuf_catlen(tb, "[", 1);
-                        conv_simple_type(L, -2, tb);
+                        if (conv_simple_type(L, -2, tb) != 0)
+				return -1;
 			rbuf_catlen(tb, "]=", 2);
-                        hash_conv_line(L, depth, tb);
+                        if (hash_conv_line(L, depth, tb) != 0)
+				return -1;
 			rbuf_catlen(tb, ",", 1);
                         lua_pop(L, 1);
                 }
@@ -302,8 +340,10 @@ static void hash_conv_line(lua_State *L, int depth, rbuf_t *tb)
         }
         else
         {
-                conv_simple_type(L, -1, tb);
+		if (conv_simple_type(L, -2, tb) != 0)
+			return -1;
         }
+	return 0;
 }
 
 /* hash and array may be included in one table at the same time */
@@ -313,11 +353,12 @@ static int conv_mix_data(lua_State *L, int depth, rbuf_t *tb, int enable_comment
 	int type;
 	depth++;
 	if (depth > TABLE_MAX_DEEP) {
-		return 0;
+                lua_pushfstring(L, "dump too deep depth=%d,max=%d!", depth, TABLE_MAX_DEEP);
+		return -1;
 	}
         type = lua_type(L, -1);
         if (type == LUA_TTABLE) {
-		size_t arrayLen = (size_t)lua_objlen(L, -1); /* L : ..., tbl */
+		size_t arrayLen = (size_t)lua_rawlen(L, -1); /* L : ..., tbl */
 		rbuf_catlen(tb, "{", 1);
 		if (arrayLen > 0) {
 			/* array include */
@@ -325,7 +366,8 @@ static int conv_mix_data(lua_State *L, int depth, rbuf_t *tb, int enable_comment
 			int i;
 			visited_map = (int *)malloc(sizeof(int) * (arrayLen + 1));
 			if (visited_map == NULL) {
-				return 0;
+				lua_pushliteral(L, "nomem");
+				return -1;
 			}
 			bzero((void *)visited_map, sizeof(int) * (arrayLen + 1));
 			for(i=1; i<=(int)arrayLen; i++){
@@ -337,14 +379,14 @@ static int conv_mix_data(lua_State *L, int depth, rbuf_t *tb, int enable_comment
 				}
 
 				lua_rawgeti(L, -1, i); /* push table value to stack, L : ..., tbl, value */
-				if (!conv_mix_data(L, depth, tb, enable_comment, is_in_line)) {
+				if (conv_mix_data(L, depth, tb, enable_comment, is_in_line) != 0) {
 					free(visited_map);
-					return 0;
+					return -1;
 				}
 				if (!is_in_line && enable_comment) {
-					char s[LUAI_MAXNUMBER2STR];
+					char s[LDUMP_MAXNUMBER2STR];
 					rbuf_catlen(tb, ", --", 4);
-					integer2str(s, i);
+					lua_integer2str(s, LDUMP_MAXNUMBER2STR, (lua_Integer)i);
 					rbuf_cat(tb, s);
 				} else {
 					rbuf_catlen(tb, ",", 1);
@@ -367,11 +409,16 @@ static int conv_mix_data(lua_State *L, int depth, rbuf_t *tb, int enable_comment
 					rbuf_catlen(tb, "\n", 1);
 					rbuf_catlen(tb, space, depth * INDENT_LEN);
 				}
-				conv_key(L, -2, tb);	/* L : ..., tbl, key(integer or string), value */
-				rbuf_catlen(tb, "=", 1);
-				if(!conv_mix_data(L, depth, tb, enable_comment, is_in_line)) {
+
+				/* L : ..., tbl, key(integer or string), value */
+				if (conv_key(L, -2, tb) != 0) {
 					free(visited_map);
-					return 0;
+					return -1;
+				}
+				rbuf_catlen(tb, "=", 1);
+				if(conv_mix_data(L, depth, tb, enable_comment, is_in_line) != 0) {
+					free(visited_map);
+					return -1;
 				}
 				rbuf_catlen(tb, ",", 1);
 				lua_pop(L, 1);
@@ -385,10 +432,12 @@ static int conv_mix_data(lua_State *L, int depth, rbuf_t *tb, int enable_comment
 					rbuf_catlen(tb, "\n", 1);
 					rbuf_catlen(tb, space, depth * INDENT_LEN);
 				}
-				conv_key(L, -2, tb);	/* L : ..., tbl, key(integer or string), value */
+				/* L : ..., tbl, key(integer or string), value */
+				if (conv_key(L, -2, tb) != 0)
+					return -1;
 				rbuf_catlen(tb, "=", 1);
-				if (!conv_mix_data(L, depth, tb, enable_comment, is_in_line)) {
-					return 0;
+				if (conv_mix_data(L, depth, tb, enable_comment, is_in_line) != 0) {
+					return -1;
 				}
 				rbuf_catlen(tb, ",", 1);
 				lua_pop(L, 1);
@@ -401,18 +450,19 @@ static int conv_mix_data(lua_State *L, int depth, rbuf_t *tb, int enable_comment
 		}
 		rbuf_catlen(tb, "}", 1);
 	} else {
-                conv_simple_type(L, -1, tb);
+                if (conv_simple_type(L, -1, tb) != 0)
+			return -1;
 	}
-	return 1;
+	return 0;
 }
 
-static void conv_hash_data(lua_State *L, int depth, rbuf_t *tb)
+static int conv_hash_data(lua_State *L, int depth, rbuf_t *tb)
 {
 	int type;
         depth++;
         if (depth > TABLE_MAX_DEEP) {
-                luaL_error(L, "dump too deep!");
-                return;
+                lua_pushfstring(L, "dump too deep depth=%d,max=%d!", depth, TABLE_MAX_DEEP);
+                return -1;
         }
 
         type = lua_type(L, -1);
@@ -434,18 +484,21 @@ static void conv_hash_data(lua_State *L, int depth, rbuf_t *tb)
                         index ++;
                         count ++;
 
-                        conv_key(L, -2, tb);
+                        if (conv_key(L, -2, tb) != 0)
+				return -1;
 			rbuf_catlen(tb, "=", 1);
-                        conv_hash_data(L, depth, tb);
+                        if (conv_hash_data(L, depth, tb) != 0) {
+				return -1;
+			}
 			rbuf_catlen(tb, ",", 1);
                         lua_pop(L, 1);
                 }
 		rbuf_catlen(tb, "\n", 1);
 		rbuf_catlen(tb, space, (depth-1) * INDENT_LEN);
 		rbuf_catlen(tb, "}", 1);
-        } else {
-                conv_simple_type(L, -1, tb);
+		return 0;
         }
+	return conv_simple_type(L, -1, tb);
 }
 
 static int lua__dump_in_line(lua_State *L)
@@ -454,9 +507,15 @@ static int lua__dump_in_line(lua_State *L)
 	rbuf_t *pbuf = &buf;
 	rbuf_init(pbuf);
 
-        hash_conv_line(L, 0, pbuf);
-        lua_pushlstring(L, (const char *)(pbuf->ptr), rbuf_len(pbuf));
-	lua_pushinteger(L, rbuf_len(pbuf));
+        if (hash_conv_line(L, 0, pbuf) == 0) {
+		lua_pushlstring(L, (const char *)(pbuf->ptr), rbuf_len(pbuf));
+		lua_pushinteger(L, rbuf_len(pbuf));
+	} else {
+		lua_insert(L, 1);
+		lua_pushnil(L);
+		lua_insert(L, 1);
+		lua_settop(L, 2);
+	}
 
 	rbuf_free(pbuf);
         return 2;
@@ -488,8 +547,13 @@ static int lua__dump_mix(lua_State *L)
 		}
 		lua_pop(L, 1);
 	}
-	if (!conv_mix_data(L, 0, pbuf, enable_comment, is_in_line)) {
-		luaL_error(L, "dump too deep or alloc memory failed!");
+	if (conv_mix_data(L, 0, pbuf, enable_comment, is_in_line) != 0) {
+		lua_insert(L, 1);
+		lua_pushnil(L);
+		lua_insert(L, 1);
+		lua_settop(L, 2);
+		rbuf_free(pbuf);
+		return 2;
 	}
 	lua_pushlstring(L, (const char *)(pbuf->ptr), rbuf_len(pbuf));
 	lua_pushinteger(L, rbuf_len(pbuf));
@@ -503,9 +567,15 @@ static int lua__dump(lua_State *L)
 	rbuf_t buf;
 	rbuf_t *pbuf = &buf;
 	rbuf_init(pbuf);
-	conv_hash_data(L, 0, pbuf);
-	lua_pushlstring(L, (const char *)(pbuf->ptr), rbuf_len(pbuf));
-	lua_pushinteger(L, rbuf_len(pbuf));
+	if (conv_hash_data(L, 0, pbuf) == 0) {
+		lua_pushlstring(L, (const char *)(pbuf->ptr), rbuf_len(pbuf));
+		lua_pushinteger(L, rbuf_len(pbuf));
+	} else {
+		lua_insert(L, 1);
+		lua_pushnil(L);
+		lua_insert(L, 1);
+		lua_settop(L, 2);
+	}
 	rbuf_free(pbuf);
 	return 2;
 }
