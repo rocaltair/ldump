@@ -315,18 +315,15 @@ static int hash_conv_line(lua_State *L, int depth, rbuf_t *tb)
 {
 	int type;
         depth++;
-        if (depth > TABLE_MAX_DEEP)
-        {
+        if (depth > TABLE_MAX_DEEP) {
                 lua_pushfstring(L, "dump too deep depth=%d,max=%d!", depth, TABLE_MAX_DEEP);
                 return -1;
         }
         type = lua_type(L, -1);
-        if (type == LUA_TTABLE)
-        {
+        if (type == LUA_TTABLE) {
 		rbuf_catlen(tb, "{", 1);
                 lua_pushnil(L);
-                while (lua_next(L, -2) != 0)
-                {
+                while (lua_next(L, -2) != 0) {
 			rbuf_catlen(tb, "[", 1);
                         if (conv_simple_type(L, -2, tb) != 0)
 				return -1;
@@ -337,10 +334,8 @@ static int hash_conv_line(lua_State *L, int depth, rbuf_t *tb)
                         lua_pop(L, 1);
                 }
 		rbuf_catlen(tb, "}", 1);
-        }
-        else
-        {
-		if (conv_simple_type(L, -2, tb) != 0)
+        } else {
+		if (conv_simple_type(L, -1, tb) != 0)
 			return -1;
         }
 	return 0;
